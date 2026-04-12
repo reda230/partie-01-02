@@ -1,0 +1,531 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>WebMail</title>
+    <link href="https://fonts.googleapis.com/css2?family=Google+Sans:wght@400;500;600&family=Roboto:wght@300;400;500&display=swap" rel="stylesheet">
+    <style>
+        *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+        :root {
+          --surface:     #ffffff;
+          --surface-2:   #f6f8fc;
+          --surface-3:   #e8eaed;
+          --border:      #e0e0e0;
+          --blue:        #1a73e8;
+          --blue-hover:  #1557b0;
+          --blue-light:  #e8f0fe;
+          --text-1:      #202124;
+          --text-2:      #5f6368;
+          --text-3:      #80868b;
+          --hover-bg:    #f2f6fc;
+          --sidebar-w:   256px;
+          --topbar-h:    64px;
+          --red:         #d93025;
+          --green:       #1e8e3e;
+          --yellow:      #f9ab00;
+          --shadow-1:    0 1px 2px 0 rgba(60,64,67,.3), 0 2px 6px 2px rgba(60,64,67,.15);
+          --shadow-2:    0 1px 3px rgba(0,0,0,.12);
+        }
+
+        body { font-family:'Roboto',sans-serif; background:var(--surface-2); color:var(--text-1); height:100vh; overflow:hidden; }
+
+        /* LOGIN */
+        #auth-page { display:flex; align-items:center; justify-content:center; height:100vh; }
+        .auth-card { background:var(--surface); border:1px solid var(--border); border-radius:8px; padding:48px 40px 36px; width:450px; box-shadow:var(--shadow-2); }
+        .auth-title { font-family:'Google Sans',sans-serif; font-size:1.5rem; font-weight:400; text-align:center; margin-bottom:8px; }
+        .auth-sub   { font-size:.875rem; color:var(--text-2); text-align:center; margin-bottom:32px; }
+        .field { position:relative; margin-bottom:24px; }
+        .field input { width:100%; padding:13px 16px; border:1px solid #dadce0; border-radius:4px; font-size:1rem; font-family:'Roboto',sans-serif; color:var(--text-1); outline:none; transition:border-color .15s; }
+        .field input:focus { border-color:var(--blue); border-width:2px; }
+        .field label { position:absolute; left:12px; top:50%; transform:translateY(-50%); font-size:.875rem; color:var(--text-2); pointer-events:none; transition:all .15s; background:var(--surface); padding:0 4px; }
+        .field input:focus + label, .field input:not(:placeholder-shown) + label { top:0; font-size:.75rem; color:var(--blue); }
+        .field input:not(:focus):not(:placeholder-shown) + label { color:var(--text-2); }
+        .auth-actions { display:flex; align-items:center; justify-content:space-between; margin-top:8px; }
+        .link-btn { font-family:'Google Sans',sans-serif; font-size:.875rem; font-weight:500; color:var(--blue); background:none; border:none; cursor:pointer; }
+        .link-btn:hover { text-decoration:underline; }
+        .btn-login { font-family:'Google Sans',sans-serif; font-size:.875rem; font-weight:500; background:var(--blue); color:#fff; border:none; border-radius:4px; padding:10px 24px; cursor:pointer; transition:background .15s; }
+        .btn-login:hover { background:var(--blue-hover); }
+        #auth-error { font-size:.8rem; color:var(--red); margin-top:16px; text-align:center; min-height:18px; }
+        .gmail-logo { text-align:center; margin-bottom:28px; font-family:'Google Sans',sans-serif; font-size:2rem; }
+
+        /* REGISTER MODAL */
+        .modal-overlay { position:fixed; inset:0; background:rgba(0,0,0,.4); z-index:300; display:none; align-items:center; justify-content:center; }
+        .modal-overlay.open { display:flex; }
+        .modal-card { background:var(--surface); border-radius:8px; padding:40px; width:440px; box-shadow:var(--shadow-1); }
+        .modal-card h2 { font-family:'Google Sans',sans-serif; font-size:1.3rem; font-weight:400; margin-bottom:6px; }
+        .modal-card p  { font-size:.875rem; color:var(--text-2); margin-bottom:28px; }
+        .modal-actions { display:flex; justify-content:flex-end; gap:12px; margin-top:8px; }
+        .btn-cancel-modal { font-family:'Google Sans',sans-serif; font-size:.875rem; font-weight:500; color:var(--blue); background:none; border:none; cursor:pointer; padding:10px 16px; border-radius:4px; }
+        .btn-cancel-modal:hover { background:var(--blue-light); }
+        .btn-create { font-family:'Google Sans',sans-serif; font-size:.875rem; font-weight:500; background:var(--blue); color:#fff; border:none; border-radius:4px; padding:10px 24px; cursor:pointer; }
+        .btn-create:hover { background:var(--blue-hover); }
+        #reg-error   { font-size:.8rem; color:var(--red);   margin-top:12px; min-height:16px; }
+        #reg-success { font-size:.8rem; color:var(--green); margin-top:12px; min-height:16px; }
+
+        /* APP */
+        #app-page { height:100vh; display:none; flex-direction:column; }
+
+        /* TOPBAR */
+        .topbar { height:var(--topbar-h); display:flex; align-items:center; padding:0 16px; background:var(--surface); border-bottom:1px solid var(--border); gap:8px; flex-shrink:0; position:relative; z-index:10; }
+        .topbar-logo { display:flex; align-items:center; gap:8px; width:calc(var(--sidebar-w) - 16px); flex-shrink:0; }
+        .topbar-logo .logo-text { font-family:'Google Sans',sans-serif; font-size:1.375rem; font-weight:400; color:#5f6368; }
+        .search-bar { flex:1; max-width:720px; background:var(--surface-2); border-radius:24px; padding:8px 20px; display:flex; align-items:center; gap:8px; transition:background .15s, box-shadow .15s; }
+        .search-bar:focus-within { background:var(--surface); box-shadow:var(--shadow-1); }
+        .search-bar input { border:none; background:transparent; outline:none; font-size:.9375rem; color:var(--text-1); flex:1; font-family:'Roboto',sans-serif; }
+        .topbar-right { margin-left:auto; display:flex; align-items:center; gap:4px; }
+        .icon-btn { width:40px; height:40px; border-radius:50%; border:none; background:none; cursor:pointer; display:flex; align-items:center; justify-content:center; color:var(--text-2); font-size:1.1rem; transition:background .15s; }
+        .icon-btn:hover { background:var(--hover-bg); }
+        .avatar { width:32px; height:32px; border-radius:50%; background:var(--blue); color:#fff; display:flex; align-items:center; justify-content:center; font-family:'Google Sans',sans-serif; font-size:.875rem; font-weight:500; cursor:pointer; margin-left:8px; flex-shrink:0; position:relative; }
+        .avatar-menu { position:absolute; top:44px; right:0; background:var(--surface); border:1px solid var(--border); border-radius:8px; box-shadow:var(--shadow-1); min-width:220px; padding:8px 0; z-index:100; display:none; }
+        .avatar-menu.open { display:block; }
+        .avatar-menu-item { padding:10px 20px; font-size:.875rem; cursor:pointer; color:var(--text-1); display:flex; align-items:center; gap:12px; }
+        .avatar-menu-item:hover { background:var(--hover-bg); }
+        .avatar-menu-item.danger { color:var(--red); }
+
+        /* BODY */
+        .app-body { display:flex; flex:1; overflow:hidden; }
+
+        /* SIDEBAR */
+        .sidebar { width:var(--sidebar-w); flex-shrink:0; padding:8px 0; overflow-y:auto; }
+        .compose-btn { margin:0 8px 8px; background:var(--surface); border:none; border-radius:16px; padding:16px 24px; display:flex; align-items:center; gap:12px; cursor:pointer; width:calc(100% - 16px); font-family:'Google Sans',sans-serif; font-size:.875rem; font-weight:500; color:var(--text-1); box-shadow:0 1px 3px rgba(0,0,0,.2),0 1px 2px rgba(0,0,0,.14); transition:box-shadow .15s; }
+        .compose-btn:hover { box-shadow:0 2px 6px rgba(0,0,0,.2),0 1px 3px rgba(0,0,0,.16); }
+        .nav-item { display:flex; align-items:center; gap:16px; padding:4px 16px 4px 26px; height:32px; cursor:pointer; border-radius:0 16px 16px 0; margin-right:16px; font-size:.875rem; color:var(--text-1); transition:background .1s; }
+        .nav-item:hover { background:var(--hover-bg); }
+        .nav-item.active { background:var(--blue-light); font-weight:700; }
+        .nav-count { margin-left:auto; font-size:.75rem; font-weight:500; }
+
+        /* MAIN */
+        .main { flex:1; overflow:hidden; display:flex; flex-direction:column; background:var(--surface); border-radius:16px 0 0 16px; margin:8px 0 8px; border:1px solid var(--border); }
+
+        /* TOOLBAR */
+        .mail-toolbar { padding:8px 16px; display:flex; align-items:center; gap:4px; border-bottom:1px solid var(--border); flex-shrink:0; }
+        .tb-btn { padding:8px; border-radius:4px; border:none; background:none; cursor:pointer; color:var(--text-2); font-size:.8rem; display:flex; align-items:center; gap:6px; transition:background .1s; }
+        .tb-btn:hover { background:var(--hover-bg); }
+        .tb-sep { width:1px; height:20px; background:var(--border); margin:0 4px; }
+
+        /* EMAIL LIST */
+        .email-list-wrap { flex:1; overflow-y:auto; }
+        .email-row { display:flex; align-items:center; padding:0 16px; height:52px; cursor:pointer; border-bottom:1px solid var(--border); transition:box-shadow .1s; position:relative; background:var(--surface); }
+        .email-row.unread { font-weight:500; }
+        .email-row:hover { box-shadow:0 2px 3px rgba(0,0,0,.12); z-index:1; background:var(--hover-bg); }
+        .star { color:var(--border); font-size:1rem; margin-right:12px; cursor:pointer; flex-shrink:0; transition:color .1s; }
+        .star:hover, .star.on { color:var(--yellow); }
+        .row-avatar { width:32px; height:32px; border-radius:50%; display:flex; align-items:center; justify-content:center; color:#fff; font-size:.875rem; font-family:'Google Sans',sans-serif; flex-shrink:0; margin-right:12px; }
+        .email-sender { width:180px; flex-shrink:0; font-size:.875rem; overflow:hidden; white-space:nowrap; text-overflow:ellipsis; }
+        .email-snippet { flex:1; font-size:.875rem; color:var(--text-2); overflow:hidden; white-space:nowrap; text-overflow:ellipsis; padding:0 16px; }
+        .snippet-subj { color:var(--text-1); }
+        .email-row.unread .snippet-subj { font-weight:700; }
+        .email-row.unread .email-sender { font-weight:700; }
+        .email-date { font-size:.75rem; color:var(--text-2); flex-shrink:0; width:56px; text-align:right; }
+        .email-row.unread .email-date { font-weight:700; color:var(--text-1); }
+        .row-actions { position:absolute; right:16px; display:none; align-items:center; gap:4px; }
+        .email-row:hover .row-actions { display:flex; }
+        .email-row:hover .email-date { display:none; }
+        .row-act-btn { width:32px; height:32px; border-radius:50%; border:none; background:none; cursor:pointer; display:flex; align-items:center; justify-content:center; color:var(--text-2); font-size:.95rem; transition:background .1s; }
+        .row-act-btn:hover { background:var(--surface-3); }
+        .empty-state { display:flex; flex-direction:column; align-items:center; justify-content:center; height:100%; color:var(--text-2); gap:12px; }
+        .empty-icon { font-size:3rem; opacity:.4; }
+
+        /* READ */
+        #read-view { display:none; flex-direction:column; flex:1; overflow:hidden; }
+        .read-topbar { padding:8px 16px; display:flex; align-items:center; gap:8px; border-bottom:1px solid var(--border); flex-shrink:0; }
+        .read-content { padding:24px 40px; flex:1; overflow-y:auto; }
+        .read-subject-line { font-family:'Google Sans',sans-serif; font-size:1.375rem; font-weight:400; margin-bottom:16px; display:flex; align-items:center; gap:12px; }
+        .label-badge { font-size:.7rem; background:var(--surface-3); border-radius:4px; padding:2px 6px; color:var(--text-2); }
+        .msg-card { border:1px solid var(--border); border-radius:8px; }
+        .msg-header { padding:16px 20px; display:flex; align-items:flex-start; gap:12px; }
+        .msg-avatar { width:40px; height:40px; border-radius:50%; display:flex; align-items:center; justify-content:center; font-family:'Google Sans',sans-serif; font-weight:500; font-size:1rem; color:#fff; flex-shrink:0; }
+        .msg-meta { flex:1; }
+        .msg-from { font-size:.9375rem; font-weight:600; }
+        .msg-to   { font-size:.8rem; color:var(--text-2); }
+        .msg-time { font-size:.8rem; color:var(--text-2); flex-shrink:0; }
+        .msg-body { padding:0 20px 24px 72px; font-size:.9375rem; line-height:1.7; white-space:pre-wrap; word-break:break-word; }
+        .msg-actions { padding:16px 20px 20px 72px; display:flex; gap:8px; }
+        .reply-btn, .fwd-btn { border:1px solid var(--border); border-radius:20px; padding:8px 20px; background:none; cursor:pointer; font-family:'Google Sans',sans-serif; font-size:.875rem; display:flex; align-items:center; gap:6px; transition:background .1s; }
+        .reply-btn:hover, .fwd-btn:hover { background:var(--hover-bg); }
+
+        /* COMPOSE MODAL */
+        .compose-modal { position:fixed; bottom:0; right:24px; width:560px; background:var(--surface); border-radius:8px 8px 0 0; box-shadow:0 8px 10px 1px rgba(0,0,0,.14),0 3px 14px 2px rgba(0,0,0,.12),0 5px 5px -3px rgba(0,0,0,.2); z-index:200; display:none; flex-direction:column; }
+        .compose-modal.open { display:flex; }
+        .compose-header { background:#404040; color:#fff; padding:10px 16px; display:flex; align-items:center; border-radius:8px 8px 0 0; cursor:pointer; user-select:none; }
+        .compose-header span { flex:1; font-size:.875rem; font-family:'Google Sans',sans-serif; }
+        .ch-btn { background:none; border:none; color:rgba(255,255,255,.8); cursor:pointer; font-size:1rem; padding:2px 6px; }
+        .ch-btn:hover { color:#fff; }
+        .compose-field { border-bottom:1px solid var(--border); display:flex; align-items:center; padding:6px 16px; }
+        .compose-field label { font-size:.8rem; color:var(--text-2); width:48px; flex-shrink:0; }
+        .compose-field input { flex:1; border:none; outline:none; font-size:.9375rem; font-family:'Roboto',sans-serif; color:var(--text-1); }
+        .compose-body-area { padding:8px 16px; }
+        .compose-body-area textarea { width:100%; border:none; outline:none; resize:none; font-size:.9375rem; font-family:'Roboto',sans-serif; color:var(--text-1); line-height:1.6; min-height:200px; }
+        .compose-footer { padding:12px 16px; display:flex; align-items:center; gap:8px; border-top:1px solid var(--border); }
+        .btn-send-msg { background:var(--blue); color:#fff; border:none; border-radius:20px; padding:9px 24px; font-family:'Google Sans',sans-serif; font-size:.875rem; font-weight:500; cursor:pointer; transition:background .15s; }
+        .btn-send-msg:hover { background:var(--blue-hover); }
+        #compose-status-msg { font-size:.8rem; flex:1; }
+        .s-ok  { color:var(--green); }
+        .s-err { color:var(--red); }
+        .trash-btn { margin-left:auto; background:none; border:none; color:var(--text-2); cursor:pointer; font-size:1.1rem; padding:4px 8px; }
+        .trash-btn:hover { color:var(--text-1); }
+
+        ::-webkit-scrollbar { width:8px; }
+        ::-webkit-scrollbar-thumb { background:#ccc; border-radius:4px; }
+    </style>
+</head>
+<body>
+
+<!-- LOGIN -->
+<div id="auth-page">
+    <div class="auth-card">
+        <div class="gmail-logo">
+            <span style="color:#EA4335">G</span><span style="color:#4285F4">m</span><span style="color:#FBBC05">a</span><span style="color:#34A853">i</span><span style="color:#EA4335">l</span>
+        </div>
+        <div class="auth-title">Se connecter</div>
+        <div class="auth-sub">Utilisez votre compte WebMail</div>
+        <div class="field">
+            <input type="text" id="login-user" placeholder=" ">
+            <label>Nom d'utilisateur</label>
+        </div>
+        <div class="field">
+            <input type="password" id="login-pass" placeholder=" ">
+            <label>Mot de passe</label>
+        </div>
+        <div class="auth-actions">
+            <button class="link-btn" onclick="openRegister()">Créer un compte</button>
+            <button class="btn-login" onclick="doLogin()">Suivant</button>
+        </div>
+        <div id="auth-error"></div>
+    </div>
+</div>
+
+<!-- REGISTER MODAL -->
+<div class="modal-overlay" id="register-modal">
+    <div class="modal-card">
+        <h2>Créer un compte</h2>
+        <p>Choisissez un nom d'utilisateur et un mot de passe.</p>
+        <div class="field">
+            <input type="text" id="reg-user" placeholder=" ">
+            <label>Nom d'utilisateur</label>
+        </div>
+        <div class="field">
+            <input type="password" id="reg-pass" placeholder=" ">
+            <label>Mot de passe</label>
+        </div>
+        <div class="field">
+            <input type="password" id="reg-pass2" placeholder=" ">
+            <label>Confirmer le mot de passe</label>
+        </div>
+        <div id="reg-error"></div>
+        <div id="reg-success"></div>
+        <div class="modal-actions">
+            <button class="btn-cancel-modal" onclick="closeRegister()">Annuler</button>
+            <button class="btn-create" onclick="doRegister()">Créer</button>
+        </div>
+    </div>
+</div>
+
+<!-- APP -->
+<div id="app-page">
+    <div class="topbar">
+        <div class="topbar-logo">
+            <span style="font-size:1.4rem">✉️</span>
+            <span class="logo-text">
+        <span style="color:#EA4335">G</span><span style="color:#4285F4">m</span><span style="color:#FBBC05">a</span><span style="color:#34A853">i</span><span style="color:#EA4335">l</span>
+      </span>
+        </div>
+        <div class="search-bar">
+            <span>🔍</span>
+            <input type="text" placeholder="Rechercher dans les e-mails" id="search-input" oninput="filterEmails()">
+        </div>
+        <div class="topbar-right">
+            <button class="icon-btn" onclick="loadInbox()" title="Actualiser">🔄</button>
+            <div class="avatar" id="avatar-btn" onclick="toggleMenu()">
+                <span id="avatar-letter">?</span>
+                <div class="avatar-menu" id="avatar-menu">
+                    <div class="avatar-menu-item">👤 <span id="menu-user"></span></div>
+                    <div class="avatar-menu-item danger" onclick="doLogout()">🚪 Déconnexion</div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div class="app-body">
+        <div class="sidebar">
+            <button class="compose-btn" onclick="openCompose()">
+                ✏️ &nbsp;Nouveau message
+            </button>
+            <div class="nav-item active" onclick="showInboxView()"><span>📥</span> Boîte de réception <span class="nav-count" id="unread-count"></span></div>
+            <div class="nav-item"><span>⭐</span> Suivis</div>
+            <div class="nav-item"><span>🕐</span> En attente</div>
+            <div class="nav-item"><span>📤</span> Envoyés</div>
+            <div class="nav-item"><span>📝</span> Brouillons</div>
+            <div class="nav-item"><span>🗑️</span> Corbeille</div>
+        </div>
+
+        <div class="main">
+            <!-- INBOX -->
+            <div id="inbox-view" style="display:flex;flex-direction:column;flex:1;overflow:hidden;">
+                <div class="mail-toolbar">
+                    <button class="tb-btn" onclick="loadInbox()">🔄 Actualiser</button>
+                    <div class="tb-sep"></div>
+                    <span style="margin-left:auto;font-size:.8rem;color:var(--text-2)" id="count-label"></span>
+                </div>
+                <div class="email-list-wrap" id="email-list-wrap">
+                    <div class="empty-state"><div class="empty-icon">⏳</div><p>Chargement...</p></div>
+                </div>
+            </div>
+
+            <!-- READ -->
+            <div id="read-view">
+                <div class="read-topbar">
+                    <button class="tb-btn" onclick="showInboxView()">← Retour</button>
+                    <div class="tb-sep"></div>
+                    <button class="tb-btn" onclick="deleteCurrentEmail()">🗑 Supprimer</button>
+                    <button class="tb-btn">📁 Archiver</button>
+                </div>
+                <div class="read-content">
+                    <div class="read-subject-line">
+                        <span id="read-subject-text"></span>
+                        <span class="label-badge">INBOX</span>
+                    </div>
+                    <div class="msg-card">
+                        <div class="msg-header">
+                            <div class="msg-avatar" id="read-avatar">A</div>
+                            <div class="msg-meta">
+                                <div class="msg-from" id="read-from"></div>
+                                <div class="msg-to">À : <span id="read-to"></span></div>
+                            </div>
+                            <div class="msg-time" id="read-date"></div>
+                        </div>
+                        <div class="msg-body" id="read-body"></div>
+                        <div class="msg-actions">
+                            <button class="reply-btn" onclick="replyTo()">↩ Répondre</button>
+                            <button class="fwd-btn">↪ Transférer</button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- COMPOSE -->
+<div class="compose-modal" id="compose-modal">
+    <div class="compose-header">
+        <span>Nouveau message</span>
+        <button class="ch-btn" onclick="toggleCompose()">—</button>
+        <button class="ch-btn" onclick="closeCompose()">✕</button>
+    </div>
+    <div class="compose-field"><label>À</label><input type="text" id="compose-to"></div>
+    <div class="compose-field"><label>Objet</label><input type="text" id="compose-subject"></div>
+    <div class="compose-body-area"><textarea id="compose-body" rows="8"></textarea></div>
+    <div class="compose-footer">
+        <button class="btn-send-msg" onclick="sendEmail()">Envoyer</button>
+        <span id="compose-status-msg"></span>
+        <button class="trash-btn" onclick="closeCompose()">🗑</button>
+    </div>
+</div>
+
+<script>
+    const API='http://localhost:8080/api';
+    let token=null,username=null,currentEmailId=null,allEmails=[];
+    const COLORS=['#1a73e8','#ea4335','#34a853','#fbbc04','#9c27b0','#ff5722','#00897b','#e67c00'];
+
+    window.onload=()=>{
+      token=sessionStorage.getItem('token');
+      username=sessionStorage.getItem('username');
+      if(token&&username){showApp();loadInbox();}
+    };
+
+    async function doLogin(){
+      const u=document.getElementById('login-user').value.trim();
+      const p=document.getElementById('login-pass').value;
+      const err=document.getElementById('auth-error');
+      err.textContent='';
+      if(!u||!p){err.textContent='Veuillez remplir tous les champs.';return;}
+      try{
+        const r=await fetch(`${API}/login`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({username:u,password:p})});
+        const d=await r.json();
+        if(d.success){token=d.token;username=d.username;sessionStorage.setItem('token',token);sessionStorage.setItem('username',username);showApp();loadInbox();}
+        else err.textContent='Adresse e-mail ou mot de passe incorrect.';
+      }catch(e){err.textContent='Impossible de se connecter au serveur.';}
+    }
+
+    document.addEventListener('keydown',e=>{if(e.key==='Enter'&&document.getElementById('auth-page').style.display!=='none')doLogin();});
+
+    async function doLogout(){
+      await fetch(`${API}/logout`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({token})}).catch(()=>{});
+      token=null;username=null;sessionStorage.clear();
+      document.getElementById('app-page').style.display='none';
+      document.getElementById('auth-page').style.display='flex';
+      document.getElementById('login-pass').value='';
+      closeCompose();
+    }
+
+    function showApp(){
+      document.getElementById('auth-page').style.display='none';
+      document.getElementById('app-page').style.display='flex';
+      const l=(username||'?')[0].toUpperCase();
+      document.getElementById('avatar-letter').textContent=l;
+      document.getElementById('menu-user').textContent=username;
+    }
+
+    function toggleMenu(){document.getElementById('avatar-menu').classList.toggle('open');}
+    document.addEventListener('click',e=>{if(!document.getElementById('avatar-btn').contains(e.target))document.getElementById('avatar-menu').classList.remove('open');});
+
+    async function loadInbox(){
+      const w=document.getElementById('email-list-wrap');
+      w.innerHTML='<div class="empty-state"><div class="empty-icon">⏳</div><p>Chargement...</p></div>';
+      try{
+        const r=await fetch(`${API}/emails?token=${token}`);
+        if(r.status===401){doLogout();return;}
+        const d=await r.json();
+        allEmails=(d.emails||[]).reverse();
+        renderList(allEmails);
+      }catch(e){w.innerHTML='<div class="empty-state"><div class="empty-icon">❌</div><p>Erreur de chargement.</p></div>';}
+    }
+
+    function renderList(emails){
+      const w=document.getElementById('email-list-wrap');
+      const u=emails.filter(e=>!e.is_read).length;
+      document.getElementById('unread-count').textContent=u>0?u:'';
+      document.getElementById('count-label').textContent=`${emails.length} message${emails.length!==1?'s':''}`;
+      if(!emails.length){w.innerHTML='<div class="empty-state"><div class="empty-icon">📭</div><p>Boîte de réception vide</p></div>';return;}
+      w.innerHTML=emails.map(e=>{
+        const c=COLORS[(e.sender||'').charCodeAt(0)%COLORS.length];
+        const l=(e.sender||'?')[0].toUpperCase();
+        return`<div class="email-row${e.is_read?'':' unread'}" onclick="openEmail(${e.id})">
+          <span class="star" onclick="event.stopPropagation();this.classList.toggle('on')">★</span>
+          <div class="row-avatar" style="background:${c}">${l}</div>
+          <div class="email-sender">${esc(e.sender)}</div>
+          <div class="email-snippet"><span class="snippet-subj">${esc(e.subject||'(Sans objet)')}</span></div>
+          <div class="email-date">${fmtDate(e.sent_at)}</div>
+          <div class="row-actions">
+            <button class="row-act-btn" title="Archiver">📁</button>
+            <button class="row-act-btn" title="Supprimer" onclick="event.stopPropagation();deleteEmail(${e.id})">🗑</button>
+          </div>
+        </div>`;
+      }).join('');
+    }
+
+    function filterEmails(){
+      const q=document.getElementById('search-input').value.toLowerCase();
+      renderList(q?allEmails.filter(e=>(e.sender||'').toLowerCase().includes(q)||(e.subject||'').toLowerCase().includes(q)):allEmails);
+    }
+
+    function showInboxView(){
+      document.getElementById('inbox-view').style.display='flex';
+      document.getElementById('read-view').style.display='none';
+      loadInbox();
+    }
+
+    async function openEmail(id){
+      currentEmailId=id;
+      try{
+        const r=await fetch(`${API}/email?id=${id}&token=${token}`);
+        if(r.status===401){doLogout();return;}
+        const e=await r.json();
+        const c=COLORS[(e.sender||'').charCodeAt(0)%COLORS.length];
+        document.getElementById('read-subject-text').textContent=e.subject||'(Sans objet)';
+        document.getElementById('read-from').textContent=e.sender;
+        document.getElementById('read-to').textContent=e.recipient;
+        document.getElementById('read-date').textContent=fmtFull(e.sent_at);
+        document.getElementById('read-body').textContent=e.body||'';
+        const av=document.getElementById('read-avatar');
+        av.textContent=(e.sender||'?')[0].toUpperCase();
+        av.style.background=c;
+        document.getElementById('inbox-view').style.display='none';
+        document.getElementById('read-view').style.display='flex';
+        allEmails=allEmails.map(m=>m.id===id?{...m,is_read:true}:m);
+      }catch(e){alert('Impossible de charger ce message.');}
+    }
+
+    async function deleteEmail(id){
+      await fetch(`${API}/email?id=${id}&token=${token}`,{method:'DELETE'});
+      allEmails=allEmails.filter(e=>e.id!==id);
+      renderList(allEmails);
+    }
+
+    async function deleteCurrentEmail(){
+      if(!confirm('Supprimer ce message ?'))return;
+      await fetch(`${API}/email?id=${currentEmailId}&token=${token}`,{method:'DELETE'});
+      showInboxView();
+    }
+
+    function replyTo(){
+      openCompose();
+      document.getElementById('compose-to').value=document.getElementById('read-from').textContent;
+      document.getElementById('compose-subject').value=document.getElementById('read-subject-text').textContent;
+    }
+
+    function openCompose(){document.getElementById('compose-modal').classList.add('open');}
+    function closeCompose(){
+      document.getElementById('compose-modal').classList.remove('open');
+      ['compose-to','compose-subject'].forEach(id=>document.getElementById(id).value='');
+      document.getElementById('compose-body').value='';
+      document.getElementById('compose-status-msg').textContent='';
+    }
+    let composeMin=false;
+    function toggleCompose(){
+      composeMin=!composeMin;
+      ['compose-to','compose-subject'].forEach(id=>document.getElementById(id).closest('.compose-field').style.display=composeMin?'none':'flex');
+      document.querySelector('.compose-body-area').style.display=composeMin?'none':'block';
+      document.querySelector('.compose-footer').style.display=composeMin?'none':'flex';
+    }
+
+    async function sendEmail(){
+      const to=document.getElementById('compose-to').value.trim();
+      const subject=document.getElementById('compose-subject').value.trim();
+      const body=document.getElementById('compose-body').value;
+      const st=document.getElementById('compose-status-msg');
+      if(!to){st.innerHTML='<span class="s-err">Destinataire requis.</span>';return;}
+      st.textContent='Envoi...';
+      try{
+        const r=await fetch(`${API}/send`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({token,from:username,to,subject,body})});
+        const d=await r.json();
+        if(d.success){st.innerHTML='<span class="s-ok">✓ Envoyé</span>';setTimeout(closeCompose,1600);}
+        else st.innerHTML=`<span class="s-err">${esc(d.error||'Erreur')}</span>`;
+      }catch(e){st.innerHTML='<span class="s-err">Erreur réseau.</span>';}
+    }
+
+    function esc(s){return String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');}
+
+    function openRegister(){
+      document.getElementById('register-modal').classList.add('open');
+      document.getElementById('reg-error').textContent='';
+      document.getElementById('reg-success').textContent='';
+      ['reg-user','reg-pass','reg-pass2'].forEach(id=>document.getElementById(id).value='');
+    }
+    function closeRegister(){ document.getElementById('register-modal').classList.remove('open'); }
+
+    async function doRegister(){
+      const u=document.getElementById('reg-user').value.trim();
+      const p=document.getElementById('reg-pass').value;
+      const p2=document.getElementById('reg-pass2').value;
+      const err=document.getElementById('reg-error');
+      const ok=document.getElementById('reg-success');
+      err.textContent=''; ok.textContent='';
+      if(!u){err.textContent='Nom d\'utilisateur requis.';return;}
+      if(p.length<4){err.textContent='Mot de passe trop court (min 4 caractères).';return;}
+      if(p!==p2){err.textContent='Les mots de passe ne correspondent pas.';return;}
+      try{
+        const r=await fetch(`${API}/register`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({username:u,password:p})});
+        const d=await r.json();
+        if(d.success){
+          ok.textContent='✓ Compte créé avec succès !';
+          setTimeout(()=>{closeRegister();document.getElementById('login-user').value=u;},1800);
+        } else {
+          err.textContent=d.error||'Erreur lors de la création.';
+        }
+      }catch(e){err.textContent='Erreur réseau.';}
+    }
+    function fmtDate(s){
+      if(!s)return'';
+      try{const d=new Date(s.replace(' ','T'));const n=new Date();return d.toDateString()===n.toDateString()?d.toLocaleTimeString('fr-FR',{hour:'2-digit',minute:'2-digit'}):d.toLocaleDateString('fr-FR',{day:'2-digit',month:'short'});}catch{return s;}
+    }
+    function fmtFull(s){
+      if(!s)return'';
+      try{return new Date(s.replace(' ','T')).toLocaleString('fr-FR',{weekday:'short',day:'numeric',month:'long',year:'numeric',hour:'2-digit',minute:'2-digit'});}catch{return s;}
+    }
+</script>
+</body>
+</html>

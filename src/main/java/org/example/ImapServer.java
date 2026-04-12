@@ -1,19 +1,29 @@
 package org.example;
 
+import org.example.db.DatabaseManager;
+
 import java.io.*;
 import java.net.*;
-import java.text.SimpleDateFormat;
+import java.sql.ResultSet;
 import java.util.*;
 import java.util.concurrent.atomic.AtomicInteger;
 
+/**
+ * Partie 5 — ImapServer avec stockage MySQL.
+ * Changements :
+ *  - loadInbox() lit depuis MySQL.
+ *  - handleStore() persiste le flag \Seen en base via markRead().
+ *  - handleSearch() filtre depuis les données MySQL.
+ *  - Suppression logique via deleteEmail() si EXPUNGE ajouté.
+ */
 public class ImapServer {
-    private static final int PORT = 143; // Port IMAP standard (non privilégié si <1024)
+    private static final int PORT = 143;
+
     public static void main(String[] args) {
         try (ServerSocket serverSocket = new ServerSocket(PORT)) {
             System.out.println("IMAP Server started on port " + PORT);
             while (true) {
                 Socket clientSocket = serverSocket.accept();
-                System.out.println("Connection from " + clientSocket.getInetAddress());
                 new ImapSession(clientSocket).start();
             }
         } catch (IOException e) {
@@ -22,71 +32,44 @@ public class ImapServer {
     }
 }
 
-// Classe représentant un message IMAP
-class ImapMessage {
-    int uid;
+/** Email chargé depuis MySQL pour IMAP. */
+class ImapDbMessage {
+    int     id;
     boolean seen;
-    File file;
+    String  sender, recipient, subject, body, sentAt;
 
-    public ImapMessage(int uid, File file) {
-        this.uid = uid;
-        this.file = file;
-        this.seen = false;
+    public ImapDbMessage(int id, String sender, String recipient,
+                         String subject, String body, String sentAt, boolean seen) {
+        this.id = id; this.sender = sender; this.recipient = recipient;
+        this.subject = subject; this.body = body;
+        this.sentAt = sentAt; this.seen = seen;
     }
 
-    public String getHeader() throws IOException {
-        BufferedReader reader = new BufferedReader(new FileReader(file));
-        StringBuilder header = new StringBuilder();
-        String line;
-        while ((line = reader.readLine()) != null) {
-            if (line.isEmpty()) break; // fin des headers
-            header.append(line).append("\r\n");
-        }
-        reader.close();
-        return header.toString();
+    public String getHeaders() {
+        return "From: "    + sender    + "\r\n"
+                + "To: "      + recipient + "\r\n"
+                + "Subject: " + subject   + "\r\n"
+                + "Date: "    + sentAt    + "\r\n";
     }
 
-    public String getBody() throws IOException {
-        BufferedReader reader = new BufferedReader(new FileReader(file));
-        StringBuilder body = new StringBuilder();
-        String line;
-        boolean inBody = false;
-        while ((line = reader.readLine()) != null) {
-            if (inBody) body.append(line).append("\r\n");
-            if (line.isEmpty()) inBody = true;
-        }
-        reader.close();
-        return body.toString();
-    }
+    public String getBody() { return body == null ? "" : body; }
 
-    public String getFull() throws IOException {
-        BufferedReader reader = new BufferedReader(new FileReader(file));
-        StringBuilder full = new StringBuilder();
-        String line;
-        while ((line = reader.readLine()) != null) {
-            full.append(line).append("\r\n");
-        }
-        reader.close();
-        return full.toString();
+    public String getFull() {
+        return getHeaders() + "\r\n" + getBody();
     }
 }
 
-// Session IMAP par client
 class ImapSession extends Thread {
     private Socket socket;
     private BufferedReader in;
     private PrintWriter out;
 
     private enum State { NOT_AUTHENTICATED, AUTHENTICATED, SELECTED }
-
     private State state = State.NOT_AUTHENTICATED;
     private String username;
-    private List<ImapMessage> inbox = new ArrayList<>();
-    private AtomicInteger uidCounter = new AtomicInteger(1); // UID unique
+    private List<ImapDbMessage> inbox = new ArrayList<>();
 
-    public ImapSession(Socket socket) {
-        this.socket = socket;
-    }
+    public ImapSession(Socket socket) { this.socket = socket; }
 
     @Override
     public void run() {
@@ -99,146 +82,171 @@ class ImapSession extends Thread {
             while ((line = in.readLine()) != null) {
                 if (line.trim().isEmpty()) continue;
                 String[] parts = line.split(" ", 3);
-                String tag = parts[0];
+                if (parts.length < 2) continue;
+                String tag     = parts[0];
                 String command = parts[1].toUpperCase();
-                String args = parts.length > 2 ? parts[2] : "";
+                String args    = parts.length > 2 ? parts[2] : "";
 
-                switch(command) {
-                    case "LOGIN": handleLogin(tag, args); break;
-                    case "SELECT": handleSelect(tag, args); break;
-                    case "FETCH": handleFetch(tag, args); break;
-                    case "STORE": handleStore(tag, args); break;
-                    case "SEARCH": handleSearch(tag, args); break;
-                    case "LOGOUT": handleLogout(tag); return;
-                    default: out.println(tag + " BAD Unknown command"); break;
+                switch (command) {
+                    case "LOGIN":    handleLogin(tag, args);   break;
+                    case "SELECT":   handleSelect(tag, args);  break;
+                    case "FETCH":    handleFetch(tag, args);   break;
+                    case "STORE":    handleStore(tag, args);   break;
+                    case "SEARCH":   handleSearch(tag, args);  break;
+                    case "EXPUNGE":  handleExpunge(tag);       break;
+                    case "LOGOUT":   handleLogout(tag); return;
+                    default: out.println(tag + " BAD Unknown command");
                 }
             }
-        } catch(IOException e) {
+        } catch (IOException e) {
             e.printStackTrace();
         } finally {
-            try { socket.close(); } catch (IOException e) { /* ignore */ }
+            try { socket.close(); } catch (IOException ignored) {}
         }
     }
 
-    // ---------------- COMMANDES ----------------
-
+    // ── LOGIN ────────────────────────────────────────────────────────────
     private void handleLogin(String tag, String args) {
-        if(state != State.NOT_AUTHENTICATED) {
-            out.println(tag + " BAD Already authenticated");
-            return;
+        if (state != State.NOT_AUTHENTICATED) {
+            out.println(tag + " BAD Already authenticated"); return;
         }
         String[] parts = args.split(" ");
-        if(parts.length < 2) {
-            out.println(tag + " BAD LOGIN requires username and password");
-            return;
+        if (parts.length < 2) { out.println(tag + " BAD LOGIN requires username and password"); return; }
+
+        try {
+            if (DatabaseManager.getInstance().authenticate(parts[0], parts[1])) {
+                username = parts[0];
+                state = State.AUTHENTICATED;
+                out.println(tag + " OK LOGIN completed");
+            } else {
+                out.println(tag + " NO Authentication failed");
+            }
+        } catch (Exception e) {
+            out.println(tag + " NO Server error: " + e.getMessage());
         }
-        username = parts[0];
-        // On ignore le mot de passe pour la démo
-        state = State.AUTHENTICATED;
-        out.println(tag + " OK LOGIN completed");
     }
 
+    // ── SELECT ───────────────────────────────────────────────────────────
     private void handleSelect(String tag, String folder) {
-        if(state != State.AUTHENTICATED) {
-            out.println(tag + " BAD SELECT not allowed in current state");
-            return;
+        if (state == State.NOT_AUTHENTICATED) {
+            out.println(tag + " BAD SELECT not allowed in current state"); return;
         }
-        if(!folder.equalsIgnoreCase("INBOX")) {
-            out.println(tag + " NO Folder does not exist");
-            return;
+        if (!folder.equalsIgnoreCase("INBOX")) {
+            out.println(tag + " NO [NONEXISTENT] Folder does not exist"); return;
         }
         state = State.SELECTED;
-        loadInbox(); // charge messages depuis disque
-        out.println("* FLAGS (\\Seen)");
+        try {
+            loadInbox();
+        } catch (Exception e) {
+            out.println(tag + " NO DB error: " + e.getMessage()); return;
+        }
+        long unseen = inbox.stream().filter(m -> !m.seen).count();
+        out.println("* FLAGS (\\Seen \\Deleted)");
         out.println("* " + inbox.size() + " EXISTS");
-        out.println("* 0 RECENT");
+        out.println("* " + unseen + " RECENT");
         out.println(tag + " OK [READ-WRITE] SELECT completed");
     }
 
+    // ── FETCH ────────────────────────────────────────────────────────────
     private void handleFetch(String tag, String args) {
-        if(state != State.SELECTED) {
-            out.println(tag + " BAD FETCH not allowed in current state");
-            return;
-        }
+        if (state != State.SELECTED) { out.println(tag + " BAD FETCH not allowed in current state"); return; }
         String[] parts = args.split(" ", 2);
         int msgNum;
         try {
             msgNum = Integer.parseInt(parts[0]) - 1;
-            if(msgNum < 0 || msgNum >= inbox.size()) throw new NumberFormatException();
-        } catch(NumberFormatException e) {
-            out.println(tag + " BAD Invalid message number");
-            return;
+            if (msgNum < 0 || msgNum >= inbox.size()) throw new NumberFormatException();
+        } catch (NumberFormatException e) { out.println(tag + " BAD Invalid message number"); return; }
+
+        ImapDbMessage msg = inbox.get(msgNum);
+        String dataItem = parts.length > 1 ? parts[1].toUpperCase() : "RFC822";
+
+        if (dataItem.contains("BODY[HEADER]") || dataItem.contains("RFC822.HEADER")) {
+            String headers = msg.getHeaders();
+            out.println("* " + (msgNum+1) + " FETCH (BODY[HEADER] {" + headers.length() + "})");
+            out.println(headers);
+        } else if (dataItem.contains("BODY[TEXT]") || dataItem.contains("RFC822.TEXT")) {
+            String body = msg.getBody();
+            out.println("* " + (msgNum+1) + " FETCH (BODY[TEXT] {" + body.length() + "})");
+            out.println(body);
+        } else {
+            // RFC822 complet
+            String full = msg.getFull();
+            out.println("* " + (msgNum+1) + " FETCH (FLAGS (\\" + (msg.seen ? "Seen" : "") + ") RFC822 {" + full.length() + "})");
+            out.println(full);
+            // Marquer comme lu automatiquement
+            msg.seen = true;
+            try { DatabaseManager.getInstance().markRead(msg.id); } catch (Exception ignored) {}
         }
-        ImapMessage msg = inbox.get(msgNum);
-        try {
-            if(parts.length > 1 && parts[1].equalsIgnoreCase("BODY[HEADER]")) {
-                out.println("* " + (msgNum+1) + " FETCH (FLAGS (\\Seen) BODY[HEADER] {" + msg.getHeader().length() + "}");
-                out.println(msg.getHeader() + ")");
-            } else {
-                out.println("* " + (msgNum+1) + " FETCH (FLAGS (\\Seen) RFC822 {" + msg.getFull().length() + "}");
-                out.println(msg.getFull() + ")");
-                msg.seen = true;
-            }
-            out.println(tag + " OK FETCH completed");
-        } catch(IOException e) {
-            out.println(tag + " BAD Error reading message");
-        }
+        out.println(tag + " OK FETCH completed");
     }
 
+    // ── STORE ────────────────────────────────────────────────────────────
     private void handleStore(String tag, String args) {
-        if(state != State.SELECTED) {
-            out.println(tag + " BAD STORE not allowed in current state");
-            return;
-        }
-        // Format attendu : num +FLAGS (\Seen)
+        if (state != State.SELECTED) { out.println(tag + " BAD STORE not allowed in current state"); return; }
         String[] parts = args.split(" ", 3);
         int msgNum;
         try {
             msgNum = Integer.parseInt(parts[0]) - 1;
-            if(msgNum < 0 || msgNum >= inbox.size()) throw new NumberFormatException();
-        } catch(NumberFormatException e) {
-            out.println(tag + " BAD Invalid message number");
-            return;
+            if (msgNum < 0 || msgNum >= inbox.size()) throw new NumberFormatException();
+        } catch (NumberFormatException e) { out.println(tag + " BAD Invalid message number"); return; }
+
+        if (parts.length > 2 && parts[2].contains("\\Seen")) {
+            inbox.get(msgNum).seen = true;
+            // ── Partie 5 : persistance en base ──────────────────────────
+            try {
+                DatabaseManager.getInstance().markRead(inbox.get(msgNum).id);
+            } catch (Exception e) {
+                System.err.println("markRead DB error: " + e.getMessage());
+            }
         }
-        String flags = parts[2];
-        if(flags.contains("\\Seen")) inbox.get(msgNum).seen = true;
-        out.println("* " + (msgNum+1) + " FETCH (FLAGS (\\Seen))");
+        String flags = inbox.get(msgNum).seen ? "(\\Seen)" : "()";
+        out.println("* " + (msgNum+1) + " FETCH (FLAGS " + flags + ")");
         out.println(tag + " OK STORE completed");
     }
 
+    // ── SEARCH ───────────────────────────────────────────────────────────
     private void handleSearch(String tag, String args) {
-        if(state != State.SELECTED) {
-            out.println(tag + " BAD SEARCH not allowed in current state");
-            return;
-        }
+        if (state != State.SELECTED) { out.println(tag + " BAD SEARCH not allowed in current state"); return; }
         List<Integer> results = new ArrayList<>();
-        String keyword = args.replace("\"","").toLowerCase();
-        for(int i=0;i<inbox.size();i++) {
-            try {
-                String full = inbox.get(i).getFull().toLowerCase();
-                if(full.contains(keyword)) results.add(i+1);
-            } catch(IOException e) { /* ignore */ }
+        String keyword = args.replace("\"", "").toLowerCase();
+        for (int i = 0; i < inbox.size(); i++) {
+            ImapDbMessage m = inbox.get(i);
+            if (m.getFull().toLowerCase().contains(keyword)) results.add(i + 1);
         }
-        out.print("* SEARCH");
-        for(int n : results) out.print(" " + n);
-        out.println();
+        StringBuilder sb = new StringBuilder("* SEARCH");
+        for (int n : results) sb.append(" ").append(n);
+        out.println(sb);
         out.println(tag + " OK SEARCH completed");
     }
 
+    // ── EXPUNGE ──────────────────────────────────────────────────────────
+    private void handleExpunge(String tag) {
+        if (state != State.SELECTED) { out.println(tag + " BAD EXPUNGE not allowed in current state"); return; }
+        // Pour cet exemple, EXPUNGE n'a pas d'effet immédiat (suppression via DELE POP3)
+        out.println(tag + " OK EXPUNGE completed");
+    }
+
+    // ── LOGOUT ───────────────────────────────────────────────────────────
     private void handleLogout(String tag) {
         out.println("* BYE IMAP server logging out");
         out.println(tag + " OK LOGOUT completed");
     }
 
-    // ---------------- HELPERS ----------------
-    private void loadInbox() {
+    // ── Partie 5 : chargement depuis MySQL ──────────────────────────────
+    private void loadInbox() throws Exception {
         inbox.clear();
-        File dir = new File("mailserver/" + username + "/INBOX");
-        if(!dir.exists()) dir.mkdirs();
-        File[] files = dir.listFiles();
-        if(files != null) {
-            Arrays.sort(files); // pour ordre chronologique
-            for(File f : files) inbox.add(new ImapMessage(uidCounter.getAndIncrement(), f));
+        try (ResultSet rs = DatabaseManager.getInstance().fetchEmails(username)) {
+            while (rs.next()) {
+                inbox.add(new ImapDbMessage(
+                        rs.getInt("id"),
+                        rs.getString("sender"),
+                        rs.getString("recipient"),
+                        rs.getString("subject"),
+                        rs.getString("body"),
+                        rs.getString("sent_at"),
+                        rs.getBoolean("is_read")
+                ));
+            }
         }
     }
 }

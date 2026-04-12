@@ -1,24 +1,24 @@
 package org.example;
 
+import org.example.db.DatabaseManager;
+import org.example.rmi.AuthService;
+
 import java.io.*;
 import java.net.*;
+import java.rmi.Naming;
 import java.text.SimpleDateFormat;
 import java.util.*;
 
-// ============================================================
-//  SMTP Server — RFC 5321 compliant
-//  Corrections applied:
-//   1. Port changed to 2525 (no root required)
-//   2. All responses use \r\n (CRLF) — RFC 5321 §2.3.8
-//   3. Added RSET, NOOP, VRFY commands — RFC 5321 §4.5.1
-//   4. Dot-unstuffing in DATA phase — RFC 5321 §4.5.2
-//   5. MAIL FROM regex accepts optional parameters (SIZE…) — RFC 5321 §4.1.1.2
-//   6. RCPT TO checks recipient existence instead of auto-creating — RFC 5321 §3.3
-//   7. Socket read timeout (5 min) — RFC 5321 §4.5.3.2
-// ============================================================
+/**
+ * Partie 5 — SmtpServer avec stockage MySQL.
+ * Changements par rapport à la version fichiers :
+ *  - storeEmail() utilise DatabaseManager.storeEmail() au lieu de File I/O.
+ *  - handleRcptTo() vérifie l'existence du destinataire via DatabaseManager.userExists().
+ *  - handleMailFrom() authentifie via RMI (qui lit MySQL).
+ */
 public class SmtpServer {
 
-    private static final int PORT = 2525; // FIX 1: use non-privileged port
+    private static final int PORT = 2525;
 
     public static void main(String[] args) {
         try (ServerSocket serverSocket = new ServerSocket(PORT)) {
@@ -38,119 +38,61 @@ class SmtpSession extends Thread {
 
     private Socket socket;
     private BufferedReader in;
-    private PrintWriter out;  // auto-flush
+    private PrintWriter out;
 
-    private enum SmtpState {
-        CONNECTED,
-        HELO_RECEIVED,
-        MAIL_FROM_SET,
-        RCPT_TO_SET,
-        DATA_RECEIVING
-    }
+    private enum SmtpState { CONNECTED, HELO_RECEIVED, MAIL_FROM_SET, RCPT_TO_SET, DATA_RECEIVING }
 
-    private SmtpState state;
+    private SmtpState state = SmtpState.CONNECTED;
     private String sender;
-    private List<String> recipients;
-    private StringBuilder dataBuffer;
+    private List<String> recipients = new ArrayList<>();
+    private StringBuilder dataBuffer = new StringBuilder();
 
-    // Base directory where user mailboxes are stored
-    private static final String MAIL_ROOT = "mailserver";
+    public SmtpSession(Socket socket) { this.socket = socket; }
 
-    public SmtpSession(Socket socket) {
-        this.socket = socket;
-        this.state = SmtpState.CONNECTED;
-        this.recipients = new ArrayList<>();
-        this.dataBuffer = new StringBuilder();
-    }
-
-    // ------------------------------------------------------------------ //
-    //  FIX 2: send() always appends \r\n instead of relying on println()  //
-    // ------------------------------------------------------------------ //
-    private void send(String response) {
-        out.print(response + "\r\n");
-        out.flush();
-    }
+    private void send(String r) { out.print(r + "\r\n"); out.flush(); }
 
     @Override
     public void run() {
         try {
-            // FIX 7: 5-minute read timeout (RFC 5321 §4.5.3.2)
             socket.setSoTimeout(5 * 60 * 1000);
-
             in  = new BufferedReader(new InputStreamReader(socket.getInputStream()));
             out = new PrintWriter(socket.getOutputStream(), false);
-
             send("220 smtp.example.com ESMTP Service Ready");
 
             String line;
             while ((line = in.readLine()) != null) {
                 System.out.println("C: " + line);
 
-                // ── DATA accumulation phase ──────────────────────────────
                 if (state == SmtpState.DATA_RECEIVING) {
                     if (line.equals(".")) {
-                        // End of DATA
                         storeEmail(dataBuffer.toString());
                         dataBuffer.setLength(0);
                         recipients.clear();
                         state = SmtpState.HELO_RECEIVED;
                         send("250 OK");
                     } else {
-                        // FIX 4: dot-unstuffing — RFC 5321 §4.5.2
-                        // A line starting with ".." is stored as "."
-                        if (line.startsWith(".")) {
-                            line = line.substring(1);
-                        }
-                        dataBuffer.append(line).append("\r\n");
+                        dataBuffer.append(line.startsWith(".") ? line.substring(1) : line).append("\r\n");
                     }
                     continue;
                 }
 
-                // ── Command dispatch ─────────────────────────────────────
                 String command  = extractToken(line).toUpperCase();
                 String argument = extractArgument(line);
 
                 switch (command) {
-                    case "HELO":
-                    case "EHLO":
-                        handleHelo(command, argument);
-                        break;
-                    case "MAIL":
-                        handleMailFrom(argument);
-                        break;
-                    case "RCPT":
-                        handleRcptTo(argument);
-                        break;
-                    case "DATA":
-                        handleData();
-                        break;
-                    // FIX 3a: RSET — RFC 5321 §4.1.1.5
-                    case "RSET":
-                        handleRset();
-                        break;
-                    // FIX 3b: NOOP — RFC 5321 §4.1.1.9
-                    case "NOOP":
-                        send("250 OK");
-                        break;
-                    // FIX 3c: VRFY — RFC 5321 §4.1.1.6 (minimal response)
-                    case "VRFY":
-                        handleVrfy(argument);
-                        break;
-                    case "QUIT":
-                        handleQuit();
-                        return;
-                    default:
-                        send("500 5.5.1 Command unrecognized: \"" + command + "\"");
-                        break;
+                    case "HELO": case "EHLO": handleHelo(command, argument); break;
+                    case "MAIL": handleMailFrom(argument); break;
+                    case "RCPT": handleRcptTo(argument); break;
+                    case "DATA": handleData(); break;
+                    case "RSET": handleRset(); break;
+                    case "NOOP": send("250 OK"); break;
+                    case "VRFY": handleVrfy(argument); break;
+                    case "QUIT": send("221 2.0.0 Bye"); return;
+                    default: send("500 5.5.1 Command unrecognized");
                 }
             }
-
-            if (state == SmtpState.DATA_RECEIVING) {
-                System.err.println("Connection interrupted during DATA. Email discarded.");
-            }
-
         } catch (java.net.SocketTimeoutException e) {
-            send("421 4.4.2 smtp.example.com Timeout exceeded, closing connection");
+            send("421 4.4.2 Timeout");
         } catch (IOException e) {
             e.printStackTrace();
         } finally {
@@ -158,18 +100,10 @@ class SmtpSession extends Thread {
         }
     }
 
-    // ------------------------------------------------------------------ //
-    //  HELO / EHLO                                                        //
-    // ------------------------------------------------------------------ //
     private void handleHelo(String command, String arg) {
-        // Reset transaction state (RFC 5321 §4.1.1.1)
         state = SmtpState.HELO_RECEIVED;
-        sender = null;
-        recipients.clear();
-        dataBuffer.setLength(0);
-
+        sender = null; recipients.clear(); dataBuffer.setLength(0);
         if (command.equals("EHLO")) {
-            // Advertise extensions
             send("250-smtp.example.com Hello " + arg);
             send("250-SIZE 10240000");
             send("250 HELP");
@@ -178,108 +112,70 @@ class SmtpSession extends Thread {
         }
     }
 
-    // ------------------------------------------------------------------ //
-    //  RSET                                                               //
-    // ------------------------------------------------------------------ //
     private void handleRset() {
-        // Reset to post-HELO state (RFC 5321 §4.1.1.5)
-        sender = null;
-        recipients.clear();
-        dataBuffer.setLength(0);
-        if (state != SmtpState.CONNECTED) {
-            state = SmtpState.HELO_RECEIVED;
-        }
+        sender = null; recipients.clear(); dataBuffer.setLength(0);
+        if (state != SmtpState.CONNECTED) state = SmtpState.HELO_RECEIVED;
         send("250 OK");
     }
 
-    // ------------------------------------------------------------------ //
-    //  VRFY                                                               //
-    // ------------------------------------------------------------------ //
     private void handleVrfy(String arg) {
-        if (arg == null || arg.isEmpty()) {
-            send("501 5.5.4 Argument required");
-            return;
-        }
-        // Extract username from possible address
+        if (arg == null || arg.isEmpty()) { send("501 5.5.4 Argument required"); return; }
         String username = arg.replaceAll("[<>]", "").split("@")[0].trim();
-        File userDir = new File(MAIL_ROOT + File.separator + username);
-        if (userDir.exists() && userDir.isDirectory()) {
-            send("250 " + username + "@example.com");
-        } else {
-            send("550 5.1.1 User not found: " + arg);
+        try {
+            if (DatabaseManager.getInstance().userExists(username))
+                send("250 " + username + "@example.com");
+            else
+                send("550 5.1.1 User not found");
+        } catch (Exception e) {
+            send("451 DB error");
         }
     }
 
-    // ------------------------------------------------------------------ //
-    //  MAIL FROM                                                          //
-    // ------------------------------------------------------------------ //
     private void handleMailFrom(String arg) {
-        if (state == SmtpState.CONNECTED) {
-            send("503 5.5.1 Bad sequence: send HELO first");
-            return;
-        }
-
-        // FIX 5: accept optional parameters after the address — RFC 5321 §4.1.1.2
-        // Pattern: FROM:<addr> [SP params]
+        if (state == SmtpState.CONNECTED) { send("503 5.5.1 Send HELO first"); return; }
         if (!arg.toUpperCase().matches("^FROM:\\s*<[^>]*>(\\s+.*)?$")) {
-            send("501 5.5.4 Syntax error in MAIL FROM parameters");
-            return;
+            send("501 5.5.4 Syntax error"); return;
         }
+        String email = arg.substring(arg.indexOf('<') + 1, arg.indexOf('>')).trim();
+        if (!email.isEmpty() && !isValidEmail(email)) { send("501 5.1.7 Bad sender"); return; }
 
-        // Extract address between < >
-        int lt = arg.indexOf('<');
-        int gt = arg.indexOf('>');
-        if (lt < 0 || gt < 0 || gt <= lt) {
-            send("501 5.5.4 Syntax error in MAIL FROM parameters");
-            return;
+        try {
+            AuthService auth = (AuthService) Naming.lookup("rmi://localhost/AuthService");
+            // SMTP vérifie seulement que l'expéditeur existe (pas son mot de passe ici)
+            String username = email.split("@")[0];
+            if (!DatabaseManager.getInstance().userExists(username)) {
+                send("550 5.1.1 Sender not found"); return;
+            }
+            sender = email;
+            state = SmtpState.MAIL_FROM_SET;
+            send("250 OK");
+        } catch (Exception e) {
+            send("451 Authentication service error");
         }
-        String email = arg.substring(lt + 1, gt).trim();
-
-        // Null sender <> is allowed (bounce messages) — RFC 5321 §4.5.5
-        if (!email.isEmpty() && !isValidEmail(email)) {
-            send("501 5.1.7 Bad sender address syntax");
-            return;
-        }
-
-        sender = email;
-        state = SmtpState.MAIL_FROM_SET;
-        send("250 OK");
     }
 
-    // ------------------------------------------------------------------ //
-    //  RCPT TO                                                            //
-    // ------------------------------------------------------------------ //
     private void handleRcptTo(String arg) {
         if (state != SmtpState.MAIL_FROM_SET && state != SmtpState.RCPT_TO_SET) {
-            send("503 5.5.1 Bad sequence: send MAIL FROM first");
-            return;
+            send("503 5.5.1 Send MAIL FROM first"); return;
         }
-        if (!arg.toUpperCase().startsWith("TO:")) {
-            send("501 5.5.4 Syntax error in RCPT TO parameters");
-            return;
-        }
+        if (!arg.toUpperCase().startsWith("TO:")) { send("501 5.5.4 Syntax error"); return; }
 
         String potentialEmail = arg.substring(3).trim();
-        int lt = potentialEmail.indexOf('<');
-        int gt = potentialEmail.indexOf('>');
-        String email;
-        if (lt >= 0 && gt > lt) {
-            email = potentialEmail.substring(lt + 1, gt).trim();
-        } else {
-            email = potentialEmail.replaceAll("[<>]", "").trim();
-        }
+        int lt = potentialEmail.indexOf('<'), gt = potentialEmail.indexOf('>');
+        String email = (lt >= 0 && gt > lt)
+                ? potentialEmail.substring(lt + 1, gt).trim()
+                : potentialEmail.replaceAll("[<>]", "").trim();
 
-        if (!isValidEmail(email)) {
-            send("501 5.1.3 Bad recipient address syntax");
-            return;
-        }
+        if (!isValidEmail(email)) { send("501 5.1.3 Bad recipient"); return; }
 
-        // FIX 6: verify user exists — do NOT create silently — RFC 5321 §3.3
+        // ── Partie 5 : vérification en base ─────────────────────────────
         String username = email.split("@")[0];
-        File userDir = new File(MAIL_ROOT + File.separator + username);
-        if (!userDir.exists() || !userDir.isDirectory()) {
-            send("550 5.1.1 No such user here: " + email);
-            return;
+        try {
+            if (!DatabaseManager.getInstance().userExists(username)) {
+                send("550 5.1.1 No such user: " + email); return;
+            }
+        } catch (Exception e) {
+            send("451 DB error"); return;
         }
 
         recipients.add(email);
@@ -287,69 +183,37 @@ class SmtpSession extends Thread {
         send("250 OK");
     }
 
-    // ------------------------------------------------------------------ //
-    //  DATA                                                               //
-    // ------------------------------------------------------------------ //
     private void handleData() {
         if (state != SmtpState.RCPT_TO_SET || recipients.isEmpty()) {
-            send("503 5.5.1 Bad sequence: need RCPT TO first");
-            return;
+            send("503 5.5.1 Need RCPT TO first"); return;
         }
         state = SmtpState.DATA_RECEIVING;
         send("354 Start mail input; end with <CRLF>.<CRLF>");
     }
 
-    // ------------------------------------------------------------------ //
-    //  QUIT                                                               //
-    // ------------------------------------------------------------------ //
-    private void handleQuit() {
-        send("221 2.0.0 smtp.example.com Service closing transmission channel");
-    }
-
-    // ------------------------------------------------------------------ //
-    //  Store email to disk                                                //
-    // ------------------------------------------------------------------ //
+    // ── Partie 5 : stockage MySQL ────────────────────────────────────────
     private void storeEmail(String data) {
-        // Unique filename: timestamp + random suffix to avoid collisions
-        String timestamp = new SimpleDateFormat("yyyyMMdd_HHmmss_SSS").format(new Date());
+        // Extraction basique du sujet depuis les headers
+        String subject = "";
+        for (String line : data.split("\r\n")) {
+            if (line.toLowerCase().startsWith("subject:")) {
+                subject = line.substring(8).trim();
+                break;
+            }
+            if (line.isEmpty()) break; // fin des headers
+        }
 
         for (String recipient : recipients) {
             String username = recipient.split("@")[0];
-            File userDir   = new File(MAIL_ROOT + File.separator + username);
-
-            // Directory must already exist (validated in handleRcptTo)
-            if (!userDir.exists()) {
-                System.err.println("Mailbox directory missing for: " + username);
-                continue;
-            }
-
-            File emailFile = new File(userDir, timestamp + ".txt");
-
-            // Avoid overwrite if two emails arrive in the same millisecond
-            int suffix = 1;
-            while (emailFile.exists()) {
-                emailFile = new File(userDir, timestamp + "_" + suffix++ + ".txt");
-            }
-
-            try (PrintWriter writer = new PrintWriter(
-                    new OutputStreamWriter(new FileOutputStream(emailFile), "UTF-8"))) {
-                // RFC 5322 headers
-                writer.print("From: " + (sender.isEmpty() ? "<>" : sender) + "\r\n");
-                writer.print("To: " + String.join(", ", recipients) + "\r\n");
-                writer.print("Date: " + new SimpleDateFormat(
-                        "EEE, dd MMM yyyy HH:mm:ss Z", Locale.ENGLISH).format(new Date()) + "\r\n");
-                writer.print("\r\n");
-                writer.print(data);
-                System.out.println("Stored email for " + recipient + " -> " + emailFile.getName());
-            } catch (IOException e) {
+            try {
+                DatabaseManager.getInstance().storeEmail(sender, username, subject, data);
+                System.out.println("Stored email in DB for " + recipient);
+            } catch (Exception e) {
                 System.err.println("Error storing email for " + recipient + ": " + e.getMessage());
             }
         }
     }
 
-    // ------------------------------------------------------------------ //
-    //  Helpers                                                            //
-    // ------------------------------------------------------------------ //
     private String extractToken(String line) {
         int idx = line.indexOf(' ');
         return idx > 0 ? line.substring(0, idx) : line;
