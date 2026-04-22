@@ -88,6 +88,24 @@ class ImapSession extends Thread {
                 String args    = parts.length > 2 ? parts[2] : "";
 
                 switch (command) {
+                    case "CAPABILITY":
+                        out.println("* CAPABILITY IMAP4rev1");
+                        out.println(tag + " OK CAPABILITY completed");
+                        break;
+
+                    case "NOOP":
+                        out.println(tag + " OK NOOP completed");
+                        break;
+
+                    case "NAMESPACE":
+                        out.println("* NAMESPACE ((\"\" \"/\")) NIL NIL");
+                        out.println(tag + " OK NAMESPACE completed");
+                        break;
+
+                    case "EXAMINE":
+                        handleSelect(tag, args);
+                        break;
+
                     case "LOGIN":    handleLogin(tag, args);   break;
                     case "SELECT":   handleSelect(tag, args);  break;
                     case "FETCH":    handleFetch(tag, args);   break;
@@ -95,7 +113,9 @@ class ImapSession extends Thread {
                     case "SEARCH":   handleSearch(tag, args);  break;
                     case "EXPUNGE":  handleExpunge(tag);       break;
                     case "LOGOUT":   handleLogout(tag); return;
-                    default: out.println(tag + " BAD Unknown command");
+
+                    default:
+                        out.println(tag + " BAD Unknown command");
                 }
             }
         } catch (IOException e) {
@@ -168,6 +188,17 @@ class ImapSession extends Thread {
             String body = msg.getBody();
             out.println("* " + (msgNum+1) + " FETCH (BODY[TEXT] {" + body.length() + "})");
             out.println(body);
+        } else if (dataItem.contains("ENVELOPE")) {
+            String envelope =
+                    "(\"" + msg.sentAt + "\" " + // date
+                            "\"" + msg.subject + "\" " + // subject
+                            "((NIL NIL \"" + msg.sender + "\" \"example.com\")) " + // from
+                            "((NIL NIL \"" + msg.sender + "\" \"example.com\")) " + // sender
+                            "((NIL NIL \"" + msg.sender + "\" \"example.com\")) " + // reply-to
+                            "((NIL NIL \"" + msg.recipient + "\" \"example.com\")) " + // to
+                            "NIL NIL NIL NIL)";
+
+            out.println("* " + (msgNum+1) + " FETCH (ENVELOPE " + envelope + ")");
         } else {
             // RFC822 complet
             String full = msg.getFull();
